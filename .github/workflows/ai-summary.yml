@@ -1,0 +1,50 @@
+name: AI Summary Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        required: true
+      run_id:
+        required: true
+      branch:
+        required: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agent code
+        uses: actions/checkout@v4
+
+      - name: Download test results from triggering repo
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_GITHUB_TOKEN }}
+        run: |
+          curl -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/${{ github.event.inputs.repo_name }}/actions/runs/${{ github.event.inputs.run_id }}/artifacts \
+            -o artifacts.json
+
+          ARTIFACT_ID=$(jq '.artifacts[0].id' artifacts.json)
+          curl -L \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -o results.zip \
+            https://api.github.com/repos/${{ github.event.inputs.repo_name }}/actions/artifacts/$ARTIFACT_ID/zip
+
+          unzip results.zip
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run TestInsight Agent
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python main.py
