@@ -3,7 +3,14 @@ import requests
 import openai
 from config import OPENAI_API_KEY, SLACK_WEBHOOK_URL
 
-openai.api_key = OPENAI_API_KEY
+# openai.api_key = OPENAI_API_KEY
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_KEY = os.getenv("API_KEY")        # no hard-coded secrets
+DB_URL  = os.getenv("DB_URL")
 
 def load_test_results(file_path):
     with open(file_path, "r") as f:
