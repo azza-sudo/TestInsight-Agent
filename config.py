@@ -1,0 +1,2 @@
+OPENAI_API_KEY = "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"  # Add your OpenAI key
+SLACK_WEBHOOK_URL = ""           # Optional: Add Slack webhook URL

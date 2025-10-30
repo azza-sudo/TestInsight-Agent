@@ -1,0 +1,17 @@
+{
+  "summary": {
+    "total": 10,
+    "passed": 8,
+    "failed": 2
+  },
+  "failures": [
+    {
+      "name": "Login Test - Invalid Password",
+      "error": "AssertionError: Expected status 401 but got 200"
+    },
+    {
+      "name": "Checkout Test - Missing Address",
+      "error": "TimeoutError: Element not found"
+    }
+  ]
+}
