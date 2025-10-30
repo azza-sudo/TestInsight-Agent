@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_KEY = os.getenv("API_KEY")        # no hard-coded secrets
-DB_URL  = os.getenv("DB_URL")
+# DB_URL  = os.getenv("DB_URL")
 
 def load_test_results(file_path):
     with open(file_path, "r") as f:
@@ -42,4 +42,4 @@ if __name__ == "__main__":
     results = load_test_results("sample_results.json")
     print("🤖 Generating summary using AI...")
     summary = generate_summary(results)
-    send_to_slack(summary)
+    # send_to_slack(summary)
