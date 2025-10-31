@@ -1,9 +1,14 @@
 import json
 import requests
 import openai
-from config import OPENAI_API_KEY, SLACK_WEBHOOK_URL
+# from config import OPENAI_API_KEY, SLACK_WEBHOOK_URL
 
-openai.api_key = OPENAI_API_KEY
+# openai.api_key = OPENAI_API_KEY
+
+import os
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
 def load_test_results(file_path):
     with open(file_path, "r") as f:
