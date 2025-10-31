@@ -48,3 +48,10 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python main.py
+
+      - name: Upload AI report
+        uses: actions/upload-artifact@v4
+        with:
+            name: ai-report
+            path: testinsight/ai_report.json
+
