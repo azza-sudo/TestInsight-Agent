@@ -117,33 +117,72 @@ def _normalize_results(raw):
     raise KeyError(f"Could not derive summary; top-level keys: {top_keys}")
 
 # ---- tiny helper that prints the nice summary ----
+def _signature(text: str) -> str:
+    # crude signature: keep key tokens, drop line numbers/paths
+    import re
+    t = re.sub(r"/__w/[^\\s]+", "<WORKDIR>", text)
+    t = re.sub(r":\\d+", ":", t)  # strip line numbers
+    t = t.lower()
+    for k in ["timeout", "tocontaintext", "element(s) not found",
+              "waiting for locator", "authentication", "401", "click"]:
+        t = t.replace(k, f"[{k}]")
+    return t
+
 def _print_pretty_summary(summary, failures):
-    print("📊 Reading test results...")
-    # If you later wire real LLM calls, detect env like OPENAI_API_KEY here
-    print("🤖 Generating summary using AI...")  # or "(local rules)" if no API key
-    print()
+    import os
+    lines = []
+    lines.append("📊 Reading test results...")
+    lines.append("🤖 Generating summary using AI...\n")
     total = summary.get("total", 0)
     passed = summary.get("passed", 0)
     failed = summary.get("failed", 0)
-    print("✅ Test Summary:")
-    print(f"- {passed} of {total} tests passed successfully.")
-    print(f"- {failed} failures detected.")
-    # quick heuristics-based suggestions
-    suggestions = set()
+    lines.append("## ✅ Test Summary")
+    lines.append(f"- **{passed} / {total}** passed")
+    lines.append(f"- **{failed}** failures\n")
+
+    # group failures by signature
+    groups = {}
     for f in failures:
-        msgs = f.get("messages") if isinstance(f, dict) else []
-        text = "\n".join(msgs) if isinstance(msgs, list) else str(f)
-        t = text.lower()
-        if "timeout" in t and ("click" in t or "waiting for locator" in t):
-            suggestions.add("Improve element wait logic (use locators + expect, increase timeouts, or waitForURL()).")
-        if "tocontaintext" in t or "element(s) not found" in t or "locator(" in t:
-            suggestions.add("Verify selectors and page state; ensure error containers render before asserting text.")
-        if "auth" in t or "401" in t or "authentication" in t:
-            suggestions.add("Check auth/API flows and test data seeding.")
+        msgs = f.get("messages", []) if isinstance(f, dict) else [str(f)]
+        sig = _signature("\n".join(msgs) if msgs else f.get("title", "unknown"))
+        groups.setdefault(sig, {"count": 0, "examples": []})
+        groups[sig]["count"] += 1
+        if isinstance(f, dict):
+            ex = f"- `{f.get('file','?')}`:{f.get('line','?')} — {f.get('title','(no title)')}"
+            groups[sig]["examples"].append(ex)
+
+    if groups:
+        lines.append("### 🔎 Failure Clusters")
+        for sig, info in sorted(groups.items(), key=lambda x: -x[1]["count"]):
+            lines.append(f"- **x{info['count']}** · {sig}")
+            for ex in info["examples"][:5]:
+                lines.append(f"  {ex}")
+        lines.append("")
+
+    # suggestions (same heuristics)
+    suggestions = set()
+    for sig in groups.keys():
+        if "[timeout]" in sig and ("[click]" in sig or "[waiting for locator]" in sig):
+            suggestions.add("Improve waits: prefer `locator.click()` after `await expect(locator).toBeVisible()`; add route/network waits where needed.")
+        if "[tocontaintext]" in sig or "element(s) not found" in sig or "[waiting for locator]" in sig:
+            suggestions.add("Verify selectors and UI state; ensure error containers render before assertions (e.g. wait for `.alert-danger`).")
+        if "authentication" in sig or "401" in sig:
+            suggestions.add("Check test credentials/seed data and session clearing between tests.")
     if suggestions:
-        print("- Suggested next steps:")
+        lines.append("### 🛠️ Suggested Next Steps")
         for s in sorted(suggestions):
-            print(f"  • {s}")
+            lines.append(f"- {s}")
+        lines.append("")
+
+    out = "\n".join(lines)
+    print(out)
+
+    # Also write to GitHub job summary if possible
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a", encoding="utf-8") as fh:
+            fh.write(out + "\n")
+
 
 def main(argv):
     # Accept path via argv[1] or REPORT_PATH env
