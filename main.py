@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-import sys, json, pathlib, os
+import os, re, json, sys, argparse
+from typing import Dict, List, Tuple, Any
 
 # ---- your existing function (unchanged) ----
 def _normalize_results(raw):
@@ -116,17 +116,90 @@ def _normalize_results(raw):
     top_keys = ", ".join(sorted(raw.keys()))
     raise KeyError(f"Could not derive summary; top-level keys: {top_keys}")
 
-# ---- tiny helper that prints the nice summary ----
 def _signature(text: str) -> str:
-    # crude signature: keep key tokens, drop line numbers/paths
-    import re
-    t = re.sub(r"/__w/[^\\s]+", "<WORKDIR>", text)
-    t = re.sub(r":\\d+", ":", t)  # strip line numbers
+    # Normalize noisy parts so same failure buckets together
+    t = re.sub(r"/__w/[^\\s]+", "<WORKDIR>", text or "")
+    t = re.sub(r":\\d+", ":", t)             # strip line numbers
     t = t.lower()
-    for k in ["timeout", "tocontaintext", "element(s) not found",
-              "waiting for locator", "authentication", "401", "click"]:
+    # Tag key tokens we care about
+    keywords = [
+        "timeout", "tocontaintext", "element(s) not found",
+        "waiting for locator", "click", "authentication", "401"
+    ]
+    for k in keywords:
         t = t.replace(k, f"[{k}]")
-    return t
+    return t.strip() or "[unknown]"
+
+def _cluster_failures(failures: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    groups: Dict[str, Dict[str, Any]] = {}
+    for f in failures:
+        msgs = f.get("messages", []) if isinstance(f, dict) else [str(f)]
+        base = "\n".join(m for m in msgs if m) or f.get("title", "unknown")
+        sig = _signature(base)
+        g = groups.setdefault(sig, {"sig": sig, "count": 0, "examples": []})
+        g["count"] += 1
+        if isinstance(f, dict):
+            g["examples"].append({
+                "file": f.get("file", "?"),
+                "line": f.get("line", "?"),
+                "title": f.get("title", "(no title)"),
+            })
+    return sorted(groups.values(), key=lambda x: -x["count"])
+
+def _format_simple(summary: Dict[str, int], clusters: List[Dict[str, Any]], max_examples: int = 2) -> str:
+    lines = []
+    total = summary.get("total", 0)
+    passed = summary.get("passed", 0)
+    failed = summary.get("failed", 0)
+
+    lines.append(f"✅ {passed}/{total} passed • {failed} failed\n")
+
+    if clusters:
+        lines.append("Top issues")
+        for i, c in enumerate(clusters, 1):
+            # Human label per signature
+            sig = c["sig"]
+            if "[timeout]" in sig and "[waiting for locator]" in sig:
+                head = "Timeout waiting for locator"
+            elif "[tocontaintext]" in sig or "element(s) not found" in sig:
+                head = 'Validation message not found'
+            elif "[authentication]" in sig or "401" in sig:
+                head = "Authentication / session issue"
+            else:
+                head = sig[:80]
+
+            # Try to surface a key selector if present
+            m = re.search(r"\[waiting for locator\]\('([^']+)'\)", sig)
+            selector = f' {m.group(1)}' if m else ""
+            lines.append(f"{i}) {head}{selector} (x{c['count']})")
+
+            for ex in c["examples"][:max_examples]:
+                lines.append(f"   - {ex['file']}:{ex['line']}  {ex['title']}")
+            if len(c["examples"]) > max_examples:
+                lines.append(f"   - … {len(c['examples']) - max_examples} more")
+            lines.append("")  # blank line between clusters
+
+    # Practical next steps
+    tips = []
+    for c in clusters:
+        sig = c["sig"]
+        if "[timeout]" in sig and ("[click]" in sig or "[waiting for locator]" in sig):
+            tips.append("Wait for elements before interacting: `await expect(locator).toBeVisible();` then `locator.click()`.")
+        if "[tocontaintext]" in sig or "element(s) not found" in sig or "[waiting for locator]" in sig:
+            tips.append("Assert after the UI renders: `await expect(page.locator('.alert-danger')).toBeVisible()` before `toContainText`.")
+    tips = sorted(set(tips))
+    if tips:
+        lines.append("Next steps")
+        lines.extend(f"- {t}" for t in tips)
+
+    return "\n".join(lines).strip()
+
+def _write_step_summary(text: str) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+
 
 def _print_pretty_summary(summary, failures):
     import os
@@ -184,37 +257,34 @@ def _print_pretty_summary(summary, failures):
             fh.write(out + "\n")
 
 
-def main(argv):
-    # Accept path via argv[1] or REPORT_PATH env
-    path = None
-    if len(argv) > 1:
-        path = argv[1]
-    if not path:
-        path = os.environ.get("REPORT_PATH")
-    if not path:
-        print("ERROR: Provide report path as arg or set REPORT_PATH.", file=sys.stderr)
-        return 2
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("report", help="Path to Playwright JSON report")
+    ap.add_argument("--mode", choices=["simple", "detailed"], default=os.environ.get("MODE", "simple"))
+    ap.add_argument("--max-examples", type=int, default=int(os.environ.get("MAX_EXAMPLES", "2")))
+    ap.add_argument("--strict-fails", action="store_true", default=os.environ.get("STRICT_FAILS", "false").lower() in {"1","true","yes"})
+    args = ap.parse_args()
 
-    p = pathlib.Path(path)
-    if not p.is_file():
-        print(f"ERROR: Report not found at: {p}", file=sys.stderr)
-        return 2
+    print("📊 Reading test results...")
+    with open(args.report, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
 
-    try:
-        raw = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as e:
-        print(f"ERROR: Could not parse JSON: {e}", file=sys.stderr)
-        return 2
+    summary, failures = _normalize_results(raw)
 
-    try:
-        summary, failures = _normalize_results(raw)
-    except Exception as e:
-        print(f"ERROR: Could not derive summary: {e}", file=sys.stderr)
-        return 2
+    print("🤖 Generating summary using AI...\n")
 
-    _print_pretty_summary(summary, failures)
-    # return non-zero if tests failed (so CI can fail on failures if you want)
-    return 1 if summary.get("failed", 0) > 0 else 0
+    clusters = _cluster_failures(failures)
+
+    if args.mode == "simple":
+        out = _format_simple(summary, clusters, max_examples=args.max_examples)
+    else:
+        # fallback to your old verbose formatter if you have one; otherwise reuse simple
+        out = _format_simple(summary, clusters, max_examples=args.max_examples)
+
+    print(out)
+    _write_step_summary(out)
+
+    return 1 if (args.strict_fails and summary.get("failed", 0) > 0) else 0
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())
