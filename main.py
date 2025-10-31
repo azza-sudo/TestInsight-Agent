@@ -9,8 +9,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY")        # no hard-coded secrets
-# DB_URL  = os.getenv("DB_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is missing (set it as a GitHub Actions secret).")
+if not SLACK_WEBHOOK_URL:
+    raise RuntimeError("SLACK_WEBHOOK_URL is missing (set it as a GitHub Actions secret).")
+
 
 def load_test_results(file_path):
     with open(file_path, "r") as f:
