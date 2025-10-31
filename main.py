@@ -1,18 +1,41 @@
+#!/usr/bin/env python3
+"""
+Robust test-results normalizer for Playwright/Jest/Mocha + text-log fallback.
+
+Usage:
+  python main.py <path-to-json> [--runlog <path-to-runlog>]
+
+If the JSON is missing or unrecognized, we'll try to parse a Playwright console
+summary from the run log so your AI report still has correct totals.
+"""
 import json
 import os
-from openai import OpenAI
-from dotenv import load_dotenv
-import requests
+import re
+import sys
+from typing import Optional
 
-load_dotenv()
+# ---- Optional OpenAI + Slack (safe if not configured) ----
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is missing (set it as a GitHub Actions secret).")
-client = OpenAI(api_key=OPENAI_API_KEY)
 
-# -------- Helpers to normalize arbitrary test report shapes --------
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+try:
+    import requests
+except Exception:
+    requests = None
+
+
+# ---------------- Normalizers ----------------
 def _from_summary(results):
     s = results.get("summary", {})
     if all(k in s for k in ("total", "passed", "failed")):
@@ -20,8 +43,8 @@ def _from_summary(results):
         return {"total": s["total"], "passed": s["passed"], "failed": s["failed"], "failures": failures}
     return None
 
+
 def _from_mocha_stats(results):
-    # mocha --reporter json style
     stats = results.get("stats", {})
     if stats:
         total = stats.get("tests")
@@ -36,8 +59,8 @@ def _from_mocha_stats(results):
             return {"total": total, "passed": passed, "failed": failed, "failures": failures}
     return None
 
+
 def _from_jest(results):
-    # Jest aggregated results shape
     keys = results.keys()
     if {"numTotalTests", "numPassedTests", "numFailedTests"}.issubset(keys):
         total = results["numTotalTests"]
@@ -53,17 +76,14 @@ def _from_jest(results):
                             assertion.get("ancestorTitles") and " • ".join(assertion["ancestorTitles"]),
                             assertion.get("title"),
                         ])),
-                        "error": "; ".join(msg.get("content", "") for msg in assertion.get("failureMessages", []))
-                                  or (assertion.get("failureMessages") or [""])[0]
+                        "error": "; ".join(assertion.get("failureMessages", []) or []),
                     })
         return {"total": total, "passed": passed, "failed": failed, "failures": failures}
     return None
 
+
 def _from_playwright(results):
-    """
-    Playwright JSON report (reporter=json) has top-level 'suites' -> specs -> tests -> results.
-    We'll count one row per 'test'; a test is passed if ANY result.status == 'passed'.
-    """
+    # Playwright JSON report (reporter=json) -> suites -> specs -> tests -> results
     if "suites" not in results:
         return None
 
@@ -72,10 +92,8 @@ def _from_playwright(results):
 
     def walk_suite(suite, trail):
         nonlocal total, passed, failed, failures
-        # Playwright sometimes nests suites -> (either 'specs' or 'suites')
         for child in suite.get("suites", []):
             walk_suite(child, trail + [child.get("title")])
-
         for spec in suite.get("specs", []):
             spec_title = spec.get("title")
             for test in spec.get("tests", []):
@@ -84,15 +102,17 @@ def _from_playwright(results):
                 results_list = test.get("results", [])
                 statuses = [r.get("status") for r in results_list]
                 is_passed = any(s == "passed" for s in statuses)
-                is_failed = any(s == "failed" for s in statuses) and not is_passed
+                is_failed = any(s == "failed" for s in statuses)
+                is_timeout = any(s == "timedOut" for s in statuses)
+
                 if is_passed:
                     passed += 1
-                elif is_failed:
+                elif is_failed or is_timeout:
                     failed += 1
-                    # try to extract an error message
                     err = None
                     for r in results_list:
-                        for e in r.get("errors", []) or r.get("error", []) or []:
+                        errs = r.get("errors") or ([r.get("error")] if r.get("error") else [])
+                        for e in errs or []:
                             if isinstance(e, dict):
                                 err = e.get("message") or e.get("value")
                             elif isinstance(e, str):
@@ -103,97 +123,162 @@ def _from_playwright(results):
                             break
                     failures.append({
                         "title": " > ".join(filter(None, trail + [spec_title, test_title])),
-                        "error": err
+                        "error": err or f"status={statuses}",
                     })
                 else:
-                    # treat non-passed & non-failed (e.g., skipped, timedOut) as failed for summary strictly if they have errors
-                    failed += 1
-                    failures.append({
-                        "title": " > ".join(filter(None, trail + [spec_title, test_title])),
-                        "error": f"status={statuses}"
-                    })
+                    # skipped/expected do not count as failed
+                    pass
 
     for suite in results.get("suites", []):
         walk_suite(suite, [suite.get("title")])
 
     return {"total": total, "passed": passed, "failed": failed, "failures": failures}
 
+
 def normalize_results(results: dict):
-    # Try several shapes
     for parser in (_from_summary, _from_mocha_stats, _from_jest, _from_playwright):
         parsed = parser(results)
         if parsed:
-            # ensure 'failures' exists
             parsed["failures"] = parsed.get("failures") or []
             return parsed
 
-    # As a last resort, try extremely generic guesses:
-    candidates = [
-        ("total", "passed", "failed"),
-        ("tests", "passes", "failures"),
-    ]
-    for t, p, f in candidates:
+    # Generic shapes
+    for t, p, f in (("total", "passed", "failed"), ("tests", "passes", "failures")):
         if all(k in results for k in (t, p, f)):
-            return {"total": results[t], "passed": results[p], "failed": results[f], "failures": results.get("failures", [])}
+            return {"total": results[t], "passed": results[p], "failed": results[f],
+                    "failures": results.get("failures", [])}
 
     raise ValueError("Unrecognized test results shape; cannot normalize.")
 
-# --------- Your original functions, adjusted to use normalized data ---------
-def load_test_results(file_path):
-    with open(file_path, "r") as f:
-        return json.load(f)
 
-def generate_summary(results):
-    # Normalize into a stable structure first
-    norm = normalize_results(results)
+# ---------------- Fallbacks ----------------
+def parse_text_summary(text: str) -> Optional[dict]:
+    """
+    Parse lines like:
+      Running 15 tests using 1 worker
+      ...
+      4 failed
+      11 passed
+    """
+    failed = passed = total = None
+    m_failed = re.search(r"(\d+)\s+failed", text)
+    m_passed = re.search(r"(\d+)\s+passed", text)
+    m_total = re.search(r"Running\s+(\d+)\s+tests?", text)
+    if m_failed:
+        failed = int(m_failed.group(1))
+    if m_passed:
+        passed = int(m_passed.group(1))
+    if m_total:
+        total = int(m_total.group(1))
+    if failed is not None and passed is not None:
+        if total is None:
+            total = failed + passed
+        return {"total": total, "passed": passed, "failed": failed, "failures": []}
+    return None
+
+
+def safe_load_and_normalize(json_path: str, runlog_path: Optional[str] = None) -> dict:
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return normalize_results(raw)
+    except Exception:
+        if runlog_path and os.path.exists(runlog_path):
+            with open(runlog_path, "r", encoding="utf-8", errors="ignore") as f:
+                txt = f.read()
+            parsed = parse_text_summary(txt)
+            if parsed:
+                return parsed
+        # Last resort: what if the JSON file exists and is a stub?
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+                # Some users commit {"status":"no-tests-or-failure","suites":[]}
+                if re.search(r'"suites"\s*:\s*\[\s*\]', raw_text):
+                    raise ValueError("Playwright JSON contained no suites.")
+            except Exception:
+                pass
+        raise
+
+
+# ---------------- Output helpers ----------------
+def generate_summary(norm: dict) -> str:
     total = norm["total"]
     passed = norm["passed"]
     failed = norm["failed"]
-    failures = norm["failures"]
+    failures = norm.get("failures", [])[:10]
 
-    # Keep prompt tolerant if failures is large
-    failures_excerpt = failures[:10]  # avoid giant prompts
     prompt = (
         "You are a QA Assistant. Summarize these test results in 3 bullet points.\n"
         f"Totals — Total: {total}, Passed: {passed}, Failed: {failed}\n"
-        f"Failures (sample up to 10): {json.dumps(failures_excerpt, indent=2)}\n"
+        f"Failures (sample up to 10): {json.dumps(failures, ensure_ascii=False)}\n"
         "Highlight key failure trends and concrete next-step suggestions."
     )
 
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        return resp.choices[0].message.content
-    except Exception as e:
-        # Fallback summary if API call fails
-        lines = [
+    if not OPENAI_API_KEY or OpenAI is None:
+        # Fallback plain summary (no external calls)
+        bullets = [
             f"- Total: {total} | Passed: {passed} | Failed: {failed}",
-            f"- Top failures: {', '.join(f['title'] for f in failures[:5]) or 'None'}",
-            "- Next steps: triage failing specs, deduplicate flaky tests, and add logs/screenshots to failures."
+            f"- Sample failures: {', '.join((f.get('title') or '—') for f in failures) or 'None'}",
+            "- Next steps: update brittle selectors, verify testIDs, and keep traces/videos for flaky cases.",
         ]
-        return "\n".join(lines)
+        return "\n".join(bullets)
 
-def send_to_slack(message):
-    if not SLACK_WEBHOOK_URL:
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+    )
+    return resp.choices[0].message.content
+
+
+def send_to_slack(message: str):
+    if not SLACK_WEBHOOK_URL or requests is None:
         print("\n🔹 Slack not configured. Printing message locally:\n")
         print(message)
         return
-    requests.post(SLACK_WEBHOOK_URL, json={"text": message})
-    print("✅ Summary sent to Slack!")
+    try:
+        requests.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
+        print("✅ Summary sent to Slack!")
+    except Exception as e:
+        print(f"⚠️ Slack send failed: {e}")
+
+
+# ---------------- Entrypoint ----------------
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python main.py <results.json> [--runlog <runlog_path>]")
+        sys.exit(2)
+
+    json_path = sys.argv[1]
+    runlog_path = None
+    if "--runlog" in sys.argv:
+        idx = sys.argv.index("--runlog")
+        if idx + 1 < len(sys.argv):
+            runlog_path = sys.argv[idx + 1]
+
+    print("📊 Reading test results from:", json_path)
+    if runlog_path:
+        print("📝 Using run log fallback:", runlog_path)
+
+    norm = safe_load_and_normalize(json_path, runlog_path)
+    print(f"Detected shape ✓  Total={norm['total']} Passed={norm['passed']} Failed={norm['failed']}")
+
+    print("🤖 Generating summary...")
+    summary = generate_summary(norm)
+    print(summary)
+
+    # Optional: write a small AI report artifact for the workflow
+    report = {
+        "totals": {"total": norm["total"], "passed": norm["passed"], "failed": norm["failed"]},
+        "summary": summary,
+    }
+    with open("ai_report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    print("🗂  Wrote ai_report.json")
+
 
 if __name__ == "__main__":
-    print("📊 Reading test results...")
-    results = load_test_results("sample_results.json")
-    try:
-        norm = normalize_results(results)
-        print(f"Detected shape ✓  Total={norm['total']} Passed={norm['passed']} Failed={norm['failed']}")
-    except Exception as e:
-        print("❌ Could not understand test results structure.")
-        raise
-    print("🤖 Generating summary using AI...")
-    summary = generate_summary(results)
-    # send_to_slack(summary)
-    print(summary)
+    main()
