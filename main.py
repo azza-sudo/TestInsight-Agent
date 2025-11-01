@@ -21,7 +21,8 @@ def main() -> int:
     print(out)
     write_step_summary(out)
 
-    send_to_slack(out)
+    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+    send_to_slack(out, webhook_url)
 
     if summary.get("failed", 0) > 0:
         top_cluster = clusters[0] if clusters else {}
