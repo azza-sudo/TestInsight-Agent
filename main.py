@@ -16,6 +16,15 @@ def extract_specs(suite):
             results.extend(extract_specs(s))
     return results
 
+def get_error_message(test):
+    """Safely extract error message from nested test JSON."""
+    try:
+        tests = test.get("tests", [])
+        if tests and "errors" in tests[0] and len(tests[0]["errors"]) > 0:
+            return tests[0]["errors"][0].get("message", "No message")
+    except Exception:
+        pass
+    return "Unknown error"
 
 def main():
     report_path = sys.argv[1] if len(sys.argv) > 1 else "artifacts/sample_results.json"
@@ -36,10 +45,12 @@ def main():
     top_issues = []
     for test in all_specs:
         if not test.get("ok"):
+            error_msg = get_error_message(test)
             top_issues.append({
-                "error": test.get("error", "Unknown error"),
+                "error": error_msg,
                 "examples": [test["title"]]
             })
+
 
     out = {
         "total": total,
