@@ -32,7 +32,8 @@ def get_error_message(test):
             for key in path:
                 value = value[key] if isinstance(key, str) else value[key]
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                clean_msg = re.sub(r'\x1B\[[0-9;]*[A-Za-z]', '', raw_msg)
+                return clean_msg.strip()
         except (KeyError, IndexError, TypeError):
             continue
     return "Unknown error"
