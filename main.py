@@ -91,12 +91,29 @@ def main():
         }
 
         if all(env.values()):
-            summary = f"[TestInsight] {failed}/{total} Tests Failed in Playwright Run"
-            desc_lines = [f"Total Tests: {total}", f"Passed: {passed}", f"Failed: {failed}", "", "Top Issues:"]
-            for issue in out["top_issues"]:
-                desc_lines.append(f"- {issue['error']} ({', '.join(issue['examples'])})")
-            description = "\n".join(desc_lines)
+            # 🐞 Create individual Jira tickets for each failed test
+if failed > 0:
+    env = {
+        "JIRA_BASE_URL": os.getenv("JIRA_BASE_URL"),
+        "JIRA_USER_EMAIL": os.getenv("JIRA_USER_EMAIL"),
+        "JIRA_API_TOKEN": os.getenv("JIRA_API_TOKEN"),
+        "JIRA_PROJECT_KEY": os.getenv("JIRA_PROJECT_KEY")
+    }
+
+    if all(env.values()):
+        for issue in top_issues:
+            title = issue["examples"][0] if issue.get("examples") else "Unnamed Test"
+            summary = f"[TestInsight] Playwright Failure: {title}"
+            description = (
+                f"❌ *Test Failed:*\n{title}\n\n"
+                f"**Error Details:**\n{issue['error']}\n\n"
+                f"_Automatically created from Playwright test run._"
+            )
+            print(f"🪶 Creating Jira issue for: {title}")
             create_jira_issue(summary, description, env)
+    else:
+        print("⚠️ Jira credentials missing — skipping Jira ticket creation.")
+
         else:
             print("⚠️ Jira credentials missing — skipping Jira ticket creation.")
 
