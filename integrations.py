@@ -1,22 +1,65 @@
 from typing import Dict
 import requests
+import json
 from requests.auth import HTTPBasicAuth
 
-def send_to_slack(summary: str, webhook_url: str) -> None:
-    """Send test summary to Slack via Incoming Webhook."""
-    if not webhook_url:
-        print("⚠️ No SLACK_WEBHOOK_URL set — skipping Slack notification.")
-        return
+def send_to_slack(summary: dict, webhook_url: str):
+    """Send formatted summary to Slack."""
+    passed = summary.get("passed", 0)
+    failed = summary.get("failed", 0)
+    total = summary.get("total", 0)
+    top_issues = summary.get("top_issues", [])
 
-    payload = {"text": summary}
-    try:
-        resp = requests.post(webhook_url, json=payload)
-        if resp.status_code == 200:
-            print("✅ Slack notification sent.")
-        else:
-            print(f"⚠️ Slack notification failed: {resp.status_code} {resp.text}")
-    except Exception as e:
-        print(f"⚠️ Slack error: {e}")
+    # Header and summary section
+    text_blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"🧪 Test Results Summary"}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{passed}/{total} passed* • *{failed} failed*"
+            }
+        },
+    ]
+
+    # Add top issues if any
+    if top_issues:
+        issues_text = ""
+        for i, issue in enumerate(top_issues, start=1):
+            issues_text += f"*{i})* `{issue['error']}`\n"
+            if "examples" in issue:
+                for ex in issue["examples"]:
+                    issues_text += f"   • `{ex}`\n"
+            issues_text += "\n"
+
+        text_blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Top Issues:*\n{issues_text.strip()}"
+                }
+            }
+        )
+
+    # Add divider and footer
+    text_blocks.append({"type": "divider"})
+    text_blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "📅 Sent automatically by *TestInsight Agent*"}]
+    })
+
+    # Send message
+    payload = {"blocks": text_blocks}
+    resp = requests.post(webhook_url, data=json.dumps(payload), headers={"Content-Type": "application/json"})
+
+    if resp.status_code == 200:
+        print("✅ Sent formatted report to Slack")
+    else:
+        print(f"⚠️ Failed to send Slack message: {resp.status_code} {resp.text}")
 
 def create_jira_issue(summary: str, description: str, env: Dict[str, str]) -> None:
     base_url = env.get("JIRA_BASE_URL")
