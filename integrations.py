@@ -2,6 +2,22 @@ from typing import Dict
 import requests
 from requests.auth import HTTPBasicAuth
 
+def send_to_slack(summary: str, webhook_url: str) -> None:
+    """Send test summary to Slack via Incoming Webhook."""
+    if not webhook_url:
+        print("⚠️ No SLACK_WEBHOOK_URL set — skipping Slack notification.")
+        return
+
+    payload = {"text": summary}
+    try:
+        resp = requests.post(webhook_url, json=payload)
+        if resp.status_code == 200:
+            print("✅ Slack notification sent.")
+        else:
+            print(f"⚠️ Slack notification failed: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"⚠️ Slack error: {e}")
+
 def create_jira_issue(summary: str, description: str, env: Dict[str, str]) -> None:
     base_url = env.get("JIRA_BASE_URL")
     email = env.get("JIRA_USER_EMAIL")
