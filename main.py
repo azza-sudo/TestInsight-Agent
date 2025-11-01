@@ -29,7 +29,7 @@ def main() -> int:
         sig = top_cluster.get("sig", "")
         title = f"[Automation Failure] {sig[:80]}"
         description = f"{out}\n\nDetected in latest test run."
-        create_jira_ticket(title, description)
+        create_jira_issue(title, description)
 
     return 1 if summary.get("failed", 0) > 0 else 0
 
