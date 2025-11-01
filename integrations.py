@@ -1,3 +1,7 @@
+from typing import Dict
+import requests
+from requests.auth import HTTPBasicAuth
+
 def create_jira_issue(summary: str, description: str, env: Dict[str, str]) -> None:
     base_url = env.get("JIRA_BASE_URL")
     email = env.get("JIRA_USER_EMAIL")
