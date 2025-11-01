@@ -1,7 +1,7 @@
 # main.py
 import os, sys, json, argparse
 from analyzer import _normalize_results, _cluster_failures, _format_simple
-from integrations import send_to_slack, create_jira_ticket
+from integrations import create_jira_issue
 from utils import write_step_summary
 
 
