@@ -6,6 +6,17 @@ from integrations import create_jira_issue,send_to_slack
 from utils import write_step_summary
 
 
+def extract_specs(suite):
+    """Recursively extract specs from nested Playwright suites."""
+    results = []
+    if "specs" in suite:
+        results.extend(suite["specs"])
+    if "suites" in suite:
+        for s in suite["suites"]:
+            results.extend(extract_specs(s))
+    return results
+
+
 def main():
     report_path = sys.argv[1] if len(sys.argv) > 1 else "artifacts/sample_results.json"
     print("📊 Reading test results...")
@@ -13,13 +24,18 @@ def main():
     with open(report_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    total = len(data["suites"][0]["specs"])
-    passed = len([t for t in data["suites"][0]["specs"] if t["ok"]])
+    # Extract all specs recursively
+    all_specs = []
+    for suite in data.get("suites", []):
+        all_specs.extend(extract_specs(suite))
+
+    total = len(all_specs)
+    passed = len([t for t in all_specs if t.get("ok")])
     failed = total - passed
 
     top_issues = []
-    for test in data["suites"][0]["specs"]:
-        if not test["ok"]:
+    for test in all_specs:
+        if not test.get("ok"):
             top_issues.append({
                 "error": test.get("error", "Unknown error"),
                 "examples": [test["title"]]
