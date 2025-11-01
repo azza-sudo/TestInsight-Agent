@@ -1,6 +1,7 @@
 # main.py
 import os, sys, json, argparse
 import json
+import re
 from analyzer import _normalize_results, _cluster_failures, _format_simple
 from integrations import create_jira_issue,send_to_slack
 from utils import write_step_summary
