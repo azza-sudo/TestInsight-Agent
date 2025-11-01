@@ -17,14 +17,26 @@ def extract_specs(suite):
     return results
 
 def get_error_message(test):
-    """Safely extract error message from nested test JSON."""
-    try:
-        tests = test.get("tests", [])
-        if tests and "errors" in tests[0] and len(tests[0]["errors"]) > 0:
-            return tests[0]["errors"][0].get("message", "No message")
-    except Exception:
-        pass
+    """Extract Playwright test error message safely, supporting multiple JSON formats."""
+    paths = [
+        ["tests", 0, "errors", 0, "message"],
+        ["tests", 0, "error", "message"],
+        ["tests", 0, "results", 0, "error", "message"],
+        ["errors", 0, "message"],
+        ["error", "message"],
+    ]
+
+    for path in paths:
+        value = test
+        try:
+            for key in path:
+                value = value[key] if isinstance(key, str) else value[key]
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        except (KeyError, IndexError, TypeError):
+            continue
     return "Unknown error"
+
 
 def main():
     report_path = sys.argv[1] if len(sys.argv) > 1 else "artifacts/sample_results.json"
