@@ -55,6 +55,25 @@ def main():
         send_to_slack(out, webhook_url)
     else:
         print("⚠️ SLACK_WEBHOOK_URL not found, skipping Slack notification")
+        
+     # 🐞 Create Jira ticket if failures exist
+    if failed > 0:
+        env = {
+            "JIRA_BASE_URL": os.getenv("JIRA_BASE_URL"),
+            "JIRA_USER_EMAIL": os.getenv("JIRA_USER_EMAIL"),
+            "JIRA_API_TOKEN": os.getenv("JIRA_API_TOKEN"),
+            "JIRA_PROJECT_KEY": os.getenv("JIRA_PROJECT_KEY")
+        }
+
+        if all(env.values()):
+            summary = f"[TestInsight] {failed}/{total} Tests Failed in Playwright Run"
+            desc_lines = [f"Total Tests: {total}", f"Passed: {passed}", f"Failed: {failed}", "", "Top Issues:"]
+            for issue in out["top_issues"]:
+                desc_lines.append(f"- {issue['error']} ({', '.join(issue['examples'])})")
+            description = "\n".join(desc_lines)
+            create_jira_issue(summary, description, env)
+        else:
+            print("⚠️ Jira credentials missing — skipping Jira ticket creation.")
 
 
 if __name__ == "__main__":
