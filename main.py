@@ -1,9 +1,6 @@
-# main.py
-import os, sys, json, argparse
-import json
-import re
+import os, sys, json, re
 from analyzer import _normalize_results, _cluster_failures, _format_simple
-from integrations import create_jira_issue,send_to_slack
+from integrations import create_jira_issue, send_to_slack
 from utils import write_step_summary
 
 
@@ -16,6 +13,7 @@ def extract_specs(suite):
         for s in suite["suites"]:
             results.extend(extract_specs(s))
     return results
+
 
 def get_error_message(test):
     """Extract Playwright test error message safely, supporting multiple JSON formats."""
@@ -65,7 +63,6 @@ def main():
                 "examples": [test["title"]]
             })
 
-
     out = {
         "total": total,
         "passed": passed,
@@ -80,8 +77,8 @@ def main():
         send_to_slack(out, webhook_url)
     else:
         print("⚠️ SLACK_WEBHOOK_URL not found, skipping Slack notification")
-        
-     # 🐞 Create Jira ticket if failures exist
+
+    # 🐞 Create Jira ticket if failures exist
     if failed > 0:
         env = {
             "JIRA_BASE_URL": os.getenv("JIRA_BASE_URL"),
@@ -91,29 +88,17 @@ def main():
         }
 
         if all(env.values()):
-            # 🐞 Create individual Jira tickets for each failed test
-if failed > 0:
-    env = {
-        "JIRA_BASE_URL": os.getenv("JIRA_BASE_URL"),
-        "JIRA_USER_EMAIL": os.getenv("JIRA_USER_EMAIL"),
-        "JIRA_API_TOKEN": os.getenv("JIRA_API_TOKEN"),
-        "JIRA_PROJECT_KEY": os.getenv("JIRA_PROJECT_KEY")
-    }
-
-    if all(env.values()):
-        for issue in top_issues:
-            title = issue["examples"][0] if issue.get("examples") else "Unnamed Test"
-            summary = f"[TestInsight] Playwright Failure: {title}"
-            description = (
-                f"❌ *Test Failed:*\n{title}\n\n"
-                f"**Error Details:**\n{issue['error']}\n\n"
-                f"_Automatically created from Playwright test run._"
-            )
-            print(f"🪶 Creating Jira issue for: {title}")
-            create_jira_issue(summary, description, env)
-    else:
-        print("⚠️ Jira credentials missing — skipping Jira ticket creation.")
-
+            # Create individual Jira tickets for each failed test
+            for issue in top_issues:
+                title = issue["examples"][0] if issue.get("examples") else "Unnamed Test"
+                summary = f"[TestInsight] Playwright Failure: {title}"
+                description = (
+                    f"❌ *Test Failed:*\n{title}\n\n"
+                    f"**Error Details:**\n{issue['error']}\n\n"
+                    f"_Automatically created from Playwright test run._"
+                )
+                print(f"🪶 Creating Jira issue for: {title}")
+                create_jira_issue(summary, description, env)
         else:
             print("⚠️ Jira credentials missing — skipping Jira ticket creation.")
 
