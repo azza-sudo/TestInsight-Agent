@@ -1,100 +1,66 @@
-from typing import Dict
-import requests
+# integrations.py
 import json
-from requests.auth import HTTPBasicAuth
+import urllib.request
+from typing import Optional, Dict, Any
 
-def send_to_slack(summary: dict, webhook_url: str):
-    """Send formatted summary to Slack."""
-    passed = summary.get("passed", 0)
-    failed = summary.get("failed", 0)
-    total = summary.get("total", 0)
-    top_issues = summary.get("top_issues", [])
+from utils import AppConfig
 
-    # Header and summary section
-    text_blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"🧪 Test Results Summary"}
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*{passed}/{total} passed* • *{failed} failed*"
-            }
-        },
-    ]
 
-    # Add top issues if any
-    if top_issues:
-        issues_text = ""
-        for i, issue in enumerate(top_issues, start=1):
-            issues_text += f"*{i})* `{issue['error']}`\n"
-            if "examples" in issue:
-                for ex in issue["examples"]:
-                    issues_text += f"   • `{ex}`\n"
-            issues_text += "\n"
+class SlackIntegration:
+    """
+    Minimal Slack webhook poster. Enabled when SLACK_WEBHOOK_URL is set.
+    """
 
-        text_blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Top Issues:*\n{issues_text.strip()}"
-                }
-            }
+    def __init__(self, cfg: Optional[AppConfig] = None):
+        self.cfg = cfg or AppConfig()
+        self.webhook = self.cfg.slack_webhook_url
+
+    def enabled(self) -> bool:
+        return bool(self.webhook)
+
+    def post_summary(self, title: str, analysis: Dict[str, Any]) -> Optional[int]:
+        if not self.enabled():
+            return None
+
+        stats = analysis.get("stats", {})
+        ci = analysis.get("ci", {})
+
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": title}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary*\n{analysis.get('summary','')}"}},
+            {"type": "context", "elements": [
+                {"type": "mrkdwn",
+                 "text": f"Tests: {stats.get('total',0)} | ✅ {stats.get('passed',0)} | ❌ {stats.get('failed',0)} | ⏭ {stats.get('skipped',0)} | 🔁 flaky {stats.get('flaky',0)}"}
+            ]},
+        ]
+
+        # Show top patterns (if any)
+        patterns = analysis.get("patterns", {}).get("top", [])
+        if patterns:
+            pat_lines = "\n".join([f"• *{sig}*: {count}" for sig, count in patterns[:5]])
+            blocks += [
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Top patterns*\n{pat_lines}"}}
+            ]
+
+        if analysis.get("next_actions"):
+            blocks += [
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Next actions*\n{analysis['next_actions']}"}}
+            ]
+
+        if ci.get("buildHref"):
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"CI Build: {ci['buildHref']}"}]
+            })
+
+        payload = {"blocks": blocks}
+        req = urllib.request.Request(
+            self.webhook,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-
-    # Add divider and footer
-    text_blocks.append({"type": "divider"})
-    text_blocks.append({
-        "type": "context",
-        "elements": [{"type": "mrkdwn", "text": "📅 Sent automatically by *TestInsight Agent*"}]
-    })
-
-    # Send message
-    payload = {"blocks": text_blocks}
-    resp = requests.post(webhook_url, data=json.dumps(payload), headers={"Content-Type": "application/json"})
-
-    if resp.status_code == 200:
-        print("✅ Sent formatted report to Slack")
-    else:
-        print(f"⚠️ Failed to send Slack message: {resp.status_code} {resp.text}")
-
-def create_jira_issue(summary: str, description: str, env: Dict[str, str]) -> None:
-    base_url = env.get("JIRA_BASE_URL")
-    email = env.get("JIRA_USER_EMAIL")
-    token = env.get("JIRA_API_TOKEN")
-    project_key = env.get("JIRA_PROJECT_KEY")
-
-    if not all([base_url, email, token, project_key]):
-        print("⚠️ Jira credentials missing — skipping ticket creation.")
-        return
-
-    url = f"{base_url}/rest/api/3/issue"
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    auth = HTTPBasicAuth(email, token)
-
-    payload = {
-        "fields": {
-            "project": {"key": project_key},
-            "summary": summary,
-            "description": {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [{"type": "text", "text": description}]
-                    }
-                ]
-            },
-            "issuetype": {"name": "Bug"},
-        }
-    }
-
-    resp = requests.post(url, headers=headers, auth=auth, json=payload)
-    if resp.status_code == 201:
-        print(f"✅ Jira issue created: {resp.json().get('key')}")
-    else:
-        print(f"⚠️ Jira creation failed: {resp.status_code} {resp.text}")
+        with urllib.request.urlopen(req) as resp:
+            return resp.getcode()
