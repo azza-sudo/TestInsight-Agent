@@ -1,107 +1,36 @@
-import os, sys, json, re
-from analyzer import _normalize_results, _cluster_failures, _format_simple
-from integrations import create_jira_issue, send_to_slack
-from utils import write_step_summary
+# main.py
+import argparse
+from pathlib import Path
 
-
-def extract_specs(suite):
-    """Recursively extract specs from nested Playwright suites."""
-    results = []
-    if "specs" in suite:
-        results.extend(suite["specs"])
-    if "suites" in suite:
-        for s in suite["suites"]:
-            results.extend(extract_specs(s))
-    return results
-
-
-def get_error_message(test):
-    """Extract Playwright test error message safely, supporting multiple JSON formats."""
-    paths = [
-        ["tests", 0, "errors", 0, "message"],
-        ["tests", 0, "error", "message"],
-        ["tests", 0, "results", 0, "error", "message"],
-        ["errors", 0, "message"],
-        ["error", "message"],
-    ]
-
-    for path in paths:
-        value = test
-        try:
-            for key in path:
-                value = value[key] if isinstance(key, str) else value[key]
-            if isinstance(value, str) and value.strip():
-                clean_msg = re.sub(r'\x1B\[[0-9;]*[A-Za-z]', '', value)
-                return clean_msg.strip()
-        except (KeyError, IndexError, TypeError):
-            continue
-    return "Unknown error"
+from analyzer import Analyzer
+from integrations import SlackIntegration
+from utils import AppConfig
 
 
 def main():
-    report_path = sys.argv[1] if len(sys.argv) > 1 else "artifacts/sample_results.json"
-    print("📊 Reading test results...")
+    parser = argparse.ArgumentParser(description="Summarize Playwright JSON with OpenAI")
+    parser.add_argument("-i", "--input", required=True, help="Path to Playwright JSON (e.g., reports/sample_results.json)")
+    parser.add_argument("-t", "--title", default="Test Run Summary", help="Slack title")
+    args = parser.parse_args()
 
-    with open(report_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    cfg = AppConfig()
+    analyzer = Analyzer(cfg=cfg)
+    result = analyzer.analyze_file(Path(args.input))
 
-    # Extract all specs recursively
-    all_specs = []
-    for suite in data.get("suites", []):
-        all_specs.extend(extract_specs(suite))
+    print("\n=== Summary ===\n")
+    print(result["summary"], "\n")
+    print("=== Next actions ===\n")
+    print(result["next_actions"], "\n")
+    print("=== Stats ===")
+    print(result["stats"], "\n")
+    print("=== Top patterns ===")
+    print(result.get("patterns", {}).get("top", []), "\n")
 
-    total = len(all_specs)
-    passed = len([t for t in all_specs if t.get("ok")])
-    failed = total - passed
-
-    top_issues = []
-    for test in all_specs:
-        if not test.get("ok"):
-            error_msg = get_error_message(test)
-            top_issues.append({
-                "error": error_msg,
-                "examples": [test["title"]]
-            })
-
-    out = {
-        "total": total,
-        "passed": passed,
-        "failed": failed,
-        "top_issues": top_issues[:3]  # limit to top 3
-    }
-
-    print(f"✅ {passed}/{total} passed • {failed} failed")
-
-    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-    if webhook_url:
-        send_to_slack(out, webhook_url)
-    else:
-        print("⚠️ SLACK_WEBHOOK_URL not found, skipping Slack notification")
-
-    # 🐞 Create Jira ticket if failures exist
-    if failed > 0:
-        env = {
-            "JIRA_BASE_URL": os.getenv("JIRA_BASE_URL"),
-            "JIRA_USER_EMAIL": os.getenv("JIRA_USER_EMAIL"),
-            "JIRA_API_TOKEN": os.getenv("JIRA_API_TOKEN"),
-            "JIRA_PROJECT_KEY": os.getenv("JIRA_PROJECT_KEY")
-        }
-
-        if all(env.values()):
-            # Create individual Jira tickets for each failed test
-            for issue in top_issues:
-                title = issue["examples"][0] if issue.get("examples") else "Unnamed Test"
-                summary = f"[TestInsight] Playwright Failure: {title}"
-                description = (
-                    f"❌ *Test Failed:*\n{title}\n\n"
-                    f"**Error Details:**\n{issue['error']}\n\n"
-                    f"_Automatically created from Playwright test run._"
-                )
-                print(f"🪶 Creating Jira issue for: {title}")
-                create_jira_issue(summary, description, env)
-        else:
-            print("⚠️ Jira credentials missing — skipping Jira ticket creation.")
+    slack = SlackIntegration(cfg)
+    if slack.enabled():
+        status = slack.post_summary(args.title, result)
+        print(f"Posted to Slack (HTTP {status}).")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
